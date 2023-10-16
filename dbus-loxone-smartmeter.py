@@ -9,6 +9,7 @@ import sys
 import base64
 import os
 import sys
+import json
 
 if sys.version_info.major == 2:
     import gobject
@@ -80,16 +81,29 @@ class DbusLoxoneService:
         self._lastUpdate = 0
 
         # add _update function 'timer'
-        gobject.timeout_add(500, self._update)  # pause 500ms before the next request
+        gobject.timeout_add(int(config['DEFAULT']['UpdateInterval']), self._update)  # pause 500ms before the next request
 
         # add _signOfLife 'timer' to get feedback in log every 5minutes
         gobject.timeout_add(self._getSignOfLifeInterval() * 60 * 1000, self._signOfLife)
 
     def _getLoxoneSerial(self):
         config = self._getConfig()
-        serial = config['MS']['UUID']
+        url = "http://" + config['MS']['HOST'] + "/jdev/cfg/apiKey"
+        payload = {}
+        sample_string_bytes = (config['MS']['Username'] + ':' + config['MS']['Password']).encode("ascii")
+        base64_bytes = base64.b64encode(sample_string_bytes)
+        base64_string = base64_bytes.decode("ascii")
+        headers = {
+            'Authorization': 'Basic ' + base64_string
+        }
+        response = requests.request("GET", url, headers=headers, data=payload)
+        response_json = response.json()
+        value = response_json['LL']['value']
+        value = value.replace("\'", "\"")
+        value_json = json.loads(value)
+        logging.debug(value_json)
 
-        return serial
+        return value_json['snr']
 
     def _getConfig(self):
         config = configparser.ConfigParser()
@@ -114,9 +128,12 @@ class DbusLoxoneService:
 
         return int(value)
 
-    def _getLoxoneData(self):
+    def _getLoxoneData(self, uuid):
+        if not uuid:
+            return 0
+
         config = self._getConfig()
-        url = "http://" + config['MS']['HOST'] + "/jdev/sps/io/" + config['MS']['UUID']
+        url = "http://" + config['MS']['HOST'] + "/jdev/sps/io/" + uuid
         payload = {}
         sample_string_bytes = (config['MS']['Username'] + ':' + config['MS']['Password']).encode("ascii")
         base64_bytes = base64.b64encode(sample_string_bytes)
@@ -136,7 +153,7 @@ class DbusLoxoneService:
         if not meter_data:
             raise ValueError("Converting response to JSON failed")
 
-        return meter_data
+        return float(meter_data['LL']['value'])
 
     def _signOfLife(self):
         logging.info("--- Start: sign of life ---")
@@ -147,35 +164,56 @@ class DbusLoxoneService:
 
     def _update(self):
         try:
-            # get data from Loxone
-            meter_data = self._getLoxoneData()
             config = self._getConfig()
+            # get data from Loxone
+            l1_V = self._getLoxoneData(config['MS']['L1_V_UUID'])
+            l1_P = self._getLoxoneData(config['MS']['L1_P_UUID'])
+            l1_I = self._getLoxoneData(config['MS']['L1_I_UUID'])
+            l1_Mrd = self._getLoxoneData(config['MS']['L1_Mrd_UUID'])
+            l1_Mrc = self._getLoxoneData(config['MS']['L1_Mrc_UUID'])
 
-            try:
-                remapL1 = int(config['ONPREMISE']['L1Position'])
-            except KeyError:
-                remapL1 = 1
+            l2_V = self._getLoxoneData(config['MS']['L2_V_UUID'])
+            l2_P = self._getLoxoneData(config['MS']['L2_P_UUID'])
+            l2_I = self._getLoxoneData(config['MS']['L2_I_UUID'])
+            l2_Mrd = self._getLoxoneData(config['MS']['L2_Mrd_UUID'])
+            l2_Mrc = self._getLoxoneData(config['MS']['L2_Mrc_UUID'])
 
-            if remapL1 > 1:
-                old_l1 = meter_data['emeters'][0]
-                meter_data['emeters'][0] = meter_data['emeters'][remapL1 - 1]
-                meter_data['emeters'][remapL1 - 1] = old_l1
+            l3_V = self._getLoxoneData(config['MS']['L3_V_UUID'])
+            l3_P = self._getLoxoneData(config['MS']['L3_P_UUID'])
+            l3_I = self._getLoxoneData(config['MS']['L3_I_UUID'])
+            l3_Mrd = self._getLoxoneData(config['MS']['L3_Mrd_UUID'])
+            l3_Mrc = self._getLoxoneData(config['MS']['L3_Mrc_UUID'])
 
             # send data to DBus
-            power_value = float(meter_data['LL']['value']) * 1000
-            self._dbusservice['/Ac/Power'] = float(power_value)
+            self._dbusservice['/Ac/Power'] = l1_P+l2_P+l3_P
+            self._dbusservice['/Ac/L1/Voltage'] = l1_V
+            self._dbusservice['/Ac/L2/Voltage'] = l2_V
+            self._dbusservice['/Ac/L3/Voltage'] = l3_V
+            self._dbusservice['/Ac/L1/Current'] = l1_I
+            self._dbusservice['/Ac/L2/Current'] = l2_I
+            self._dbusservice['/Ac/L3/Current'] = l3_I
+            self._dbusservice['/Ac/L1/Power'] = l1_P
+            self._dbusservice['/Ac/L2/Power'] = l2_P
+            self._dbusservice['/Ac/L3/Power'] = l3_P
+            self._dbusservice['/Ac/L1/Energy/Forward'] = l1_Mrc
+            self._dbusservice['/Ac/L2/Energy/Forward'] = l2_Mrc
+            self._dbusservice['/Ac/L3/Energy/Forward'] = l3_Mrc
+            self._dbusservice['/Ac/L1/Energy/Reverse'] = l1_Mrd
+            self._dbusservice['/Ac/L2/Energy/Reverse'] = l2_Mrd
+            self._dbusservice['/Ac/L3/Energy/Reverse'] = l3_Mrd
 
             # self._dbusservice['/Ac/Energy/Forward'] = meter_data['LL']['value']*1000
             # self._dbusservice['/Ac/Energy/Reverse'] = self._dbusservice['/Ac/L1/Energy/Reverse'] + self._dbusservice['/Ac/L2/Energy/Reverse'] + self._dbusservice['/Ac/L3/Energy/Reverse']
 
             # New Version - from xris99
             # Calc = 60min * 60 sec / 0.500 (refresh interval of 500ms) * 1000
+            updateInterval = (float(config['DEFAULT']['UpdateInterval'])/1000)
             if (self._dbusservice['/Ac/Power'] > 0):
                 self._dbusservice['/Ac/Energy/Forward'] = self._dbusservice['/Ac/Energy/Forward'] + (
-                            self._dbusservice['/Ac/Power'] / (60 * 60 / 0.5 * 1000))
+                            self._dbusservice['/Ac/Power'] / (60 * 60 / updateInterval * 1000))
             if (self._dbusservice['/Ac/Power'] < 0):
                 self._dbusservice['/Ac/Energy/Reverse'] = self._dbusservice['/Ac/Energy/Reverse'] + (
-                            self._dbusservice['/Ac/Power'] * -1 / (60 * 60 / 0.5 * 1000))
+                            self._dbusservice['/Ac/Power'] * -1 / (60 * 60 / updateInterval * 1000))
 
             # logging
             logging.debug("House Consumption (/Ac/Power): %s" % (self._dbusservice['/Ac/Power']))
@@ -247,6 +285,21 @@ def main():
                 '/Ac/Energy/Forward': {'initial': 0, 'textformat': _kwh},  # energy bought from the grid
                 '/Ac/Energy/Reverse': {'initial': 0, 'textformat': _kwh},  # energy sold to the grid
                 '/Ac/Power': {'initial': 0, 'textformat': _w},
+                '/Ac/L1/Voltage': {'initial': 0, 'textformat': _v},
+                '/Ac/L2/Voltage': {'initial': 0, 'textformat': _v},
+                '/Ac/L3/Voltage': {'initial': 0, 'textformat': _v},
+                '/Ac/L1/Current': {'initial': 0, 'textformat': _a},
+                '/Ac/L2/Current': {'initial': 0, 'textformat': _a},
+                '/Ac/L3/Current': {'initial': 0, 'textformat': _a},
+                '/Ac/L1/Power': {'initial': 0, 'textformat': _w},
+                '/Ac/L2/Power': {'initial': 0, 'textformat': _w},
+                '/Ac/L3/Power': {'initial': 0, 'textformat': _w},
+                '/Ac/L1/Energy/Forward': {'initial': 0, 'textformat': _kwh},
+                '/Ac/L2/Energy/Forward': {'initial': 0, 'textformat': _kwh},
+                '/Ac/L3/Energy/Forward': {'initial': 0, 'textformat': _kwh},
+                '/Ac/L1/Energy/Reverse': {'initial': 0, 'textformat': _kwh},
+                '/Ac/L2/Energy/Reverse': {'initial': 0, 'textformat': _kwh},
+                '/Ac/L3/Energy/Reverse': {'initial': 0, 'textformat': _kwh},
             })
 
         logging.info('Connected to dbus, and switching over to gobject.MainLoop() (= event based)')
