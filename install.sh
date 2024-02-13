@@ -13,9 +13,8 @@ chmod a+x $SCRIPT_DIR/service/run
 chmod 755 $SCRIPT_DIR/service/run
 
 
-
 # create sym-link to run script in deamon
-ln -s $SCRIPT_DIR/service /service/$DAEMON_NAME
+ln -s $SCRIPT_DIR/service /opt/victronenergy/service/$DAEMON_NAME
 
 
 
