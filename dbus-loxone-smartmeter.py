@@ -153,7 +153,7 @@ class DbusLoxoneService:
         if not meter_data:
             raise ValueError("Converting response to JSON failed")
 
-        return float(meter_data['LL']['value'])
+        return float(meter_data['LL']['value'])*float(config['MS']['Power_Multiplicator'])
 
     def _signOfLife(self):
         logging.info("--- Start: sign of life ---")
